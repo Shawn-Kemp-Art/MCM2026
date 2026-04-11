@@ -108,6 +108,9 @@ qcomplexity = qcomplexity+3;
 var qorientation =R.random_int(1,2) < 2 ? "portrait" : "landscape";
 var qframecolor = R.random_int(0,3) < 1 ? "White" : R.random_int(1,3) < 2 ? "Mocha" : "Random";     
 var qmatwidth = R.random_int(50,100);
+var qlayout = ["Totem", "Banded", "Stacked", "Cluster"][R.random_int(0,3)];
+var qvariation = R.random_int(1,2) < 2 ? "On" : "Off";
+var qrotation = R.random_int(1,2) < 2 ? "Allowed" : "Aligned";
 
 
 //fxparams
@@ -184,15 +187,36 @@ definitions = [
         options: {options: ["Random","White","Mocha"]},
     },
     {
-        id: "gridsize",
-        name: "Grids",
+        id: "density",
+        name: "Density",
         type: "number",
         default: qcomplexity,
         options: {
-            min: 3,
+            min: 4,
             max: 13,
             step: 1,
-        },  
+        },
+    },
+    {
+        id: "layout",
+        name: "Layout",
+        type: "select",
+        default: qlayout,
+        options: {options: ["Totem", "Banded", "Stacked", "Cluster"]},
+    },
+    {
+        id: "variation",
+        name: "Layer variation",
+        type: "select",
+        default: qvariation,
+        options: {options: ["On", "Off"]},
+    },
+    {
+        id: "rotation",
+        name: "Rotation",
+        type: "select",
+        default: qrotation,
+        options: {options: ["Allowed", "Aligned"]},
     },
     {
         id: "matwidth",
@@ -288,37 +312,24 @@ sheet = []; //This will hold each layer
 var px=0;var py=0;var pz=0;var prange=.1; 
 
 
-//define a grid
-        var drawareawide = wide-framewidth*2;
-        var drawareahigh = high-framewidth*2;
-        var gridsize = ~~(drawareawide/R.random_int(4, 8));
-        var gridsize = ~~(drawareawide/$fx.getParam('gridsize'));
-        var gridoffsetX = ~~(drawareawide % gridsize/2)
-        var gridoffsetY = ~~(drawareahigh % gridsize/2)
-        var gridmargins = minOffset*R.random_int(2, 5);
+// Define composition
+// -------------------
+// Integrity invariant: every shape is placed inside a bounding box. All bounding
+// boxes are separated from each other and from the inner frame edge by at least
+// `safeGap`, so the uncut material always forms a single connected region welded
+// to the frame. No runtime topology check is needed.
+var drawareawide = wide-framewidth*2;
+var drawareahigh = high-framewidth*2;
+var safeGap = minOffset * 3;
 
+var layoutMode = $fx.getParam('layout');
+var density = $fx.getParam('density');
 
-        var grid=[];
-
-        for (yi = framewidth+gridoffsetY; yi < high-framewidth-gridoffsetY-1; yi += gridsize) { 
-                for (xi = framewidth+gridoffsetX; xi < wide-framewidth-gridoffsetX; xi += gridsize) {
-                    gsize = gridsize
-                    x= xi;y=yi;
-                    px=x*prange;py=y*prange;
-                    if (noise.get(px,py)>.4){grid.push({x, y, gsize});}
-                    else {
-                        gsize = ~~(gridsize/2)
-                        grid.push({x, y, gsize});
-                        var x = x+gsize;
-                        grid.push({x, y, gsize});
-                        var y=y+gsize;
-                        grid.push({x, y, gsize});
-                        var x = x-gsize;
-                        grid.push({x, y, gsize});
-                    }
-       
-                }
-            } 
+var composition = [];
+if (layoutMode === 'Totem')         composition = buildTotem(density);
+else if (layoutMode === 'Banded')   composition = buildBanded(density);
+else if (layoutMode === 'Stacked')  composition = buildStacked(density);
+else if (layoutMode === 'Cluster')  composition = buildCluster(density);
 
 
 
@@ -333,36 +344,31 @@ paper.view.autoUpdate = false;
 
 
 for (z = 0; z < stacks; z++) {
-    pz=z*prange;
-    
-    drawFrame(z); // Draw the initial frame
-    solid(z);
-    //if(z==0){solid(z)}
+    pz = z * prange;
 
-         //-----Draw each layer
-        if(z<stacks-1 && z!=0 ){
-            if (z==stacks-2){oset = minOffset}else{oset = ~~(minOffset*(stacks-z-1))}
-            var li = R.random_int(12, 12);
-            for (l=0;l<li;l++){
-                //somelines(z); 
-            }
-            
+    drawFrame(z); // every layer gets the frame ring
 
+    // Top layer (z = stacks-1) is a clean "mat" frame: no solid interior, no
+    // composition cuts. The signature is still cut into its bottom frame.
+    // All composition cuts happen on layers 0 .. stacks-2.
+    if (z < stacks - 1) {
+        solid(z);
+
+        for (i = 0; i < composition.length; i++) {
+            var box = composition[i];
+            // Depth gate: shape is cut on layer z iff the distance from the
+            // topmost cut layer (stacks-2) is less than the shape's depth.
+            //   depth = 1 → cuts only stacks-2 (shallowest)
+            //   depth = stacks-1 → cuts stacks-2 down to 0 (through-cut)
+            if ((stacks - 2 - z) >= box.depth) continue;
+
+            var minDim = Math.min(box.w, box.h);
+            var zshrink = ~~((stacks - z - 1) * (minDim / (stacks * 4)));
+
+            var shape = makeShape(box, zshrink);
+            if (shape) cut(z, shape);
         }
-
-
-        
-for (i=0;i<grid.length;i++){
-  
-            var zshrink = ~~((stacks-z-1)*(grid[i].gsize/(stacks*2)));
-            px=grid[i].x*prange;py=grid[i].y*prange;
-            if (noise.get(px,py,pz)>.5){
-                var grids = new Path.Rectangle(new Point(grid[i].x+gridmargins+zshrink, grid[i].y+gridmargins+zshrink),new Size(grid[i].gsize-gridmargins-zshrink*2,grid[i].gsize-gridmargins-zshrink*2));}
-            else {
-                var grids = new Path.Circle(new Point(grid[i].x+grid[i].gsize/2+gridmargins/2,grid[i].y+grid[i].gsize/2+gridmargins/2),grid[i].gsize/2-zshrink-gridmargins/2)
-            }
-            cut(z,grids);
-}
+    }
 
     frameIt(z);// finish the layer with a final frame cleanup 
 
@@ -505,21 +511,575 @@ function somelines(z){
         p[0]=new Point(0,y)
         y2 = R.random_int(0, high);
         p[1]=new Point(wide,y2)
-        lines = new Path.Line (p[0],p[1]); 
+        lines = new Path.Line (p[0],p[1]);
         mesh = PaperOffset.offsetStroke(lines, minOffset,{ cap: 'butt' });
         mesh.flatten(4);
         mesh.smooth();
         lines.remove();
-        join(z,mesh); 
+        join(z,mesh);
         mesh.remove();
 
-    
+
 }
 
 
+// ---------- Composition builders ----------
+// Each builder returns an array of entries:
+//   { x, y, w, h, type, angle, seed, depth }
+// Invariant: every primary entry is inset from the inner frame edge by
+// >= safeGap and separated from every other primary by >= safeGap. Nested
+// concentric inner entries share the primary's center and shrink inward, so
+// they never cross the primary's bounding box. The uncut material always
+// forms a single connected region welded to the frame ring.
+//
+// `depth` controls which layers cut the entry. See the main loop for the gate.
+// Outer shapes in a nest get small depths; inner shapes get larger depths, so
+// the viewer sees stepped concentric rings of successive layer colors.
+
+// Split `total - (n-1)*gap` into n heights drawn from a harmonic/golden ratio
+// series. Shuffled so the biggest is not always first.
+function proportionalHeights(n, total, gap) {
+    var shapeTotal = Math.max(0, total - (n - 1) * gap);
+    var ratios = [1, 0.85, 0.75, 0.618, 0.5, 0.382, 0.309];
+
+    var picks = [];
+    for (var i = 0; i < n; i++) {
+        picks.push(ratios[R.random_int(0, Math.min(ratios.length - 1, n + 1))]);
+    }
+    var sum = 0;
+    for (var i = 0; i < picks.length; i++) sum += picks[i];
+    var out = [];
+    for (var i = 0; i < picks.length; i++) out.push(shapeTotal * picks[i] / sum);
+
+    // Fisher-Yates shuffle (seeded through R)
+    for (var i = out.length - 1; i > 0; i--) {
+        var j = R.random_int(0, i);
+        var tmp = out[i]; out[i] = out[j]; out[j] = tmp;
+    }
+    return out;
+}
+
+// Pick a depth for a standalone (non-nested) shape. Variation "Off" forces
+// every shape to cut through every layer; "On" picks a tiered depth so some
+// shapes sit shallow and others cut deep.
+function pickDepth() {
+    var maxDepth = Math.max(1, stacks - 1);
+    if ($fx.getParam('variation') === 'Off') return maxDepth;
+    var r = R.random_dec();
+    if (r < 0.25) return R.random_int(1, 2);
+    if (r < 0.65) return R.random_int(3, Math.max(3, Math.floor(stacks * 0.5)));
+    return R.random_int(Math.max(3, Math.floor(stacks * 0.5)), maxDepth);
+}
+
+// Given a primary bounding box, return a list of concentric entries. levels=0
+// means just the primary (with a tiered random depth). levels>0 returns the
+// primary + `levels` inner shapes, each at ~22-34% shrink and monotonically
+// increasing depth so the reveal steps through successive layer colors.
+function makeNest(box, levels) {
+    var out = [];
+    var maxDepth = Math.max(1, stacks - 1);
+
+    if (levels === 0) {
+        out.push({
+            x: box.x, y: box.y, w: box.w, h: box.h,
+            type: box.type, angle: box.angle, orient: box.orient, seed: box.seed,
+            depth: pickDepth()
+        });
+        return out;
+    }
+
+    // Nested: outer shallow, each level steps deeper
+    var baseDepth = R.random_int(1, 3);
+    var depthStep = R.random_int(1, 3);
+    var shrinkStep = 0.22 + R.random_dec() * 0.12;
+    var variationOff = $fx.getParam('variation') === 'Off';
+
+    for (var i = 0; i <= levels; i++) {
+        var s = 1 - i * shrinkStep;
+        if (s <= 0.28) break;
+        var w = box.w * s;
+        var h = box.h * s;
+        var cx = box.x + box.w / 2;
+        var cy = box.y + box.h / 2;
+        var depth = variationOff ? maxDepth : Math.min(maxDepth, baseDepth + i * depthStep);
+        out.push({
+            x: cx - w / 2, y: cy - h / 2, w: w, h: h,
+            type: box.type,      // same type as parent for concentric read
+            angle: box.angle,    // same angle so rings stay aligned
+            orient: box.orient,  // same orientation for concentric dome/arch/quarter
+            seed: box.seed + i * 7.3,
+            depth: depth
+        });
+    }
+    return out;
+}
+
+// Mirror an entry horizontally about axisX. Preserves size/type/depth.
+function mirrorEntry(entry, axisX) {
+    return {
+        x: 2 * axisX - (entry.x + entry.w),
+        y: entry.y,
+        w: entry.w,
+        h: entry.h,
+        type: entry.type,
+        angle: -entry.angle,
+        orient: mirrorOrient(entry.type, entry.orient),
+        seed: entry.seed + 101,
+        depth: entry.depth
+    };
+}
+
+function pickNestLevels(probability) {
+    if (R.random_dec() >= probability) return 0;
+    return R.random_int(1, 3);
+}
 
 
-//^^^^^^^^^^^^^ END PROJECT FUNCTIONS ^^^^^^^^^^^^^ 
+function buildTotem(count) {
+    var topEdge = framewidth + safeGap;
+    var bottomEdge = high - framewidth - safeGap;
+    var leftEdge = framewidth + safeGap;
+    var rightEdge = wide - framewidth - safeGap;
+    var totalHigh = bottomEdge - topEdge;
+
+    // 3-6 bold primaries, lightly correlated with density
+    var primaryCount = Math.max(3, Math.min(Math.floor(2 + count / 3), 6));
+    var heights = proportionalHeights(primaryCount, totalHigh, safeGap);
+
+    var columnWide = (rightEdge - leftEdge) * 0.80;
+    var columnCenterX = (leftEdge + rightEdge) / 2;
+    var wRatios = [1, 0.85, 0.75, 0.618, 0.5];
+
+    var out = [];
+    var y = topEdge;
+    for (var i = 0; i < primaryCount; i++) {
+        var h = heights[i];
+        var w = columnWide * wRatios[R.random_int(0, wRatios.length - 1)];
+        var x = columnCenterX - w / 2; // centered on vertical axis
+        var primary = makePrimary(x, y, w, h);
+        var nested = makeNest(primary, pickNestLevels(0.65));
+        for (var j = 0; j < nested.length; j++) out.push(nested[j]);
+        y += h + safeGap;
+    }
+    return out;
+}
+
+function buildBanded(count) {
+    var topEdge = framewidth + safeGap;
+    var bottomEdge = high - framewidth - safeGap;
+    var leftEdge = framewidth + safeGap;
+    var rightEdge = wide - framewidth - safeGap;
+    var availHigh = bottomEdge - topEdge;
+    var availWide = rightEdge - leftEdge;
+
+    var primaryCount = Math.max(3, Math.min(Math.floor(2 + count / 3), 5));
+    var heights = proportionalHeights(primaryCount, availHigh, safeGap);
+
+    var wRatios = [1, 0.85, 0.75, 0.618, 0.5];
+
+    var out = [];
+    var y = topEdge;
+    for (var i = 0; i < primaryCount; i++) {
+        var h = heights[i];
+        var w = availWide * wRatios[R.random_int(0, wRatios.length - 1)];
+        // Mostly centered; occasional small offset for rhythm
+        var xOffset = 0;
+        if (R.random_dec() < 0.35) {
+            xOffset = (R.random_dec() - 0.5) * (availWide - w) * 0.5;
+        }
+        var x = leftEdge + (availWide - w) / 2 + xOffset;
+        x = Math.max(leftEdge, Math.min(rightEdge - w, x));
+
+        var primary = makePrimary(x, y, w, h);
+        var nested = makeNest(primary, pickNestLevels(0.70));
+        for (var j = 0; j < nested.length; j++) out.push(nested[j]);
+        y += h + safeGap;
+    }
+    return out;
+}
+
+function buildStacked(count) {
+    var topEdge = framewidth + safeGap;
+    var bottomEdge = high - framewidth - safeGap;
+    var leftEdge = framewidth + safeGap;
+    var rightEdge = wide - framewidth - safeGap;
+    var availHigh = bottomEdge - topEdge;
+    var axisX = (leftEdge + rightEdge) / 2;
+    // Each column occupies the left/right half minus a safeGap down the middle
+    var colWide = (axisX - safeGap / 2 - leftEdge);
+    var colLeftCenter = leftEdge + colWide / 2;
+
+    var primaryCount = Math.max(3, Math.min(Math.floor(2 + count / 3), 5));
+    var heights = proportionalHeights(primaryCount, availHigh, safeGap);
+
+    var wRatios = [1, 0.85, 0.75, 0.618];
+
+    var out = [];
+    var y = topEdge;
+    for (var i = 0; i < primaryCount; i++) {
+        var h = heights[i];
+        var w = colWide * wRatios[R.random_int(0, wRatios.length - 1)];
+        var x = colLeftCenter - w / 2;
+
+        var primary = makePrimary(x, y, w, h);
+        var nested = makeNest(primary, pickNestLevels(0.55));
+        for (var j = 0; j < nested.length; j++) {
+            out.push(nested[j]);
+            out.push(mirrorEntry(nested[j], axisX));
+        }
+        y += h + safeGap;
+    }
+    return out;
+}
+
+function buildCluster(count) {
+    var topEdge = framewidth + safeGap;
+    var bottomEdge = high - framewidth - safeGap;
+    var leftEdge = framewidth + safeGap;
+    var rightEdge = wide - framewidth - safeGap;
+    var availHigh = bottomEdge - topEdge;
+    var availWide = rightEdge - leftEdge;
+
+    // Coarse grid for alignment — shapes snap to grid cells so the composition
+    // reads as intentional rather than scatter-random
+    var gridCols = 5;
+    var gridRows = Math.max(4, Math.round(availHigh / (availWide / gridCols)));
+    var cellW = availWide / gridCols;
+    var cellH = availHigh / gridRows;
+
+    var targetPrimaries = Math.max(3, Math.min(Math.floor(2 + count / 2), 6));
+
+    var occupied = {};
+    function occupy(gx, gy, gw, gh) {
+        for (var x = gx; x < gx + gw; x++)
+            for (var y = gy; y < gy + gh; y++)
+                occupied[x + ',' + y] = true;
+    }
+    function isFree(gx, gy, gw, gh) {
+        if (gx < 0 || gy < 0 || gx + gw > gridCols || gy + gh > gridRows) return false;
+        for (var x = gx; x < gx + gw; x++)
+            for (var y = gy; y < gy + gh; y++)
+                if (occupied[x + ',' + y]) return false;
+        return true;
+    }
+
+    var out = [];
+
+    function placeAt(gx, gy, gw, gh, nestProb) {
+        var x = leftEdge + gx * cellW + safeGap / 2;
+        var y = topEdge + gy * cellH + safeGap / 2;
+        var w = gw * cellW - safeGap;
+        var h = gh * cellH - safeGap;
+        if (w < safeGap * 2 || h < safeGap * 2) return false;
+        var primary = makePrimary(x, y, w, h);
+        var nested = makeNest(primary, pickNestLevels(nestProb));
+        for (var j = 0; j < nested.length; j++) out.push(nested[j]);
+        occupy(gx, gy, gw, gh);
+        return true;
+    }
+
+    // Anchor — a chunky element near the center
+    var anchorChoices = [
+        { w: Math.min(3, gridCols), h: Math.min(3, gridRows) },
+        { w: Math.min(2, gridCols), h: Math.min(3, gridRows) },
+        { w: Math.min(3, gridCols), h: Math.min(2, gridRows) }
+    ];
+    var anchor = anchorChoices[R.random_int(0, anchorChoices.length - 1)];
+    var ax = Math.floor((gridCols - anchor.w) / 2);
+    var ay = Math.floor((gridRows - anchor.h) / 2);
+    placeAt(ax, ay, anchor.w, anchor.h, 0.55);
+    var placed = 1;
+
+    // Satellites — 1x1, 1x2, 2x1, or 2x2 cells at random free positions
+    var attempts = 0;
+    while (placed < targetPrimaries && attempts < 200) {
+        attempts++;
+        var sw = (R.random_dec() < 0.65) ? 1 : 2;
+        var sh = (R.random_dec() < 0.65) ? 1 : 2;
+        var sx = R.random_int(0, Math.max(0, gridCols - sw));
+        var sy = R.random_int(0, Math.max(0, gridRows - sh));
+        if (isFree(sx, sy, sw, sh)) {
+            if (placeAt(sx, sy, sw, sh, 0.35)) placed++;
+        }
+    }
+    return out;
+}
+
+function pickShapeType(w, h) {
+    var ratio = Math.min(w, h) / Math.max(w, h);
+    var squarish = ratio > 0.8;
+    var tall     = h > w * 1.1;
+
+    // Weighted pool — biomorphic and geometric MCM primitives mixed.
+    var pool = [];
+    pool.push('ellipse', 'ellipse');
+    pool.push('pill', 'pill');
+    pool.push('halfCircle', 'halfCircle', 'halfCircle'); // dome / bowl
+    pool.push('rect', 'rect');                           // clean right angles
+    pool.push('blob');
+    pool.push('lens');
+    if (squarish) {
+        pool.push('circle', 'circle');
+        pool.push('quarter', 'quarter');                 // Bauhaus pie wedge
+    }
+    if (tall) {
+        pool.push('arch', 'arch', 'arch');               // tombstone — signature MCM form
+    }
+    return pool[R.random_int(0, pool.length - 1)];
+}
+
+// Orientation per shape type:
+//   halfCircle / quarter → 0-3  (4 rotations)
+//   arch                 → 0-1  (upright or inverted)
+//   others               → 0    (ignored)
+function pickOrient(type) {
+    if (type === 'halfCircle' || type === 'quarter') return R.random_int(0, 3);
+    if (type === 'arch') return R.random_int(0, 1);
+    return 0;
+}
+
+// Flip orient under horizontal mirror (about a vertical axis).
+function mirrorOrient(type, orient) {
+    if (type === 'halfCircle') {
+        if (orient === 2) return 3;  // dome-right → dome-left
+        if (orient === 3) return 2;  // dome-left  → dome-right
+        return orient;               // dome-down / dome-up are symmetric
+    }
+    if (type === 'quarter') {
+        // TL↔TR, BL↔BR
+        if (orient === 0) return 1;
+        if (orient === 1) return 0;
+        if (orient === 2) return 3;
+        if (orient === 3) return 2;
+    }
+    // arch is symmetric about the vertical axis
+    return orient;
+}
+
+// Build a primary entry at (x, y, w, h) with a randomized type, angle, and orientation.
+function makePrimary(x, y, w, h) {
+    var type = pickShapeType(w, h);
+    return {
+        x: x, y: y, w: w, h: h,
+        type: type,
+        angle: pickAngle(),
+        orient: pickOrient(type),
+        seed: R.random_dec() * 1000
+    };
+}
+
+function pickAngle() {
+    if ($fx.getParam('rotation') === 'Aligned') return 0;
+    // MCM reads calmest when most shapes are axis-aligned. 60% zero-rotation,
+    // rest get a gentle ±15° tilt.
+    if (R.random_dec() < 0.6) return 0;
+    return (R.random_dec() - 0.5) * 30;
+}
+
+
+// ---------- Shape generators ----------
+// Each generator draws a biomorphic shape that stays strictly inside the given
+// bounding box. makeShape() handles per-layer shrink and optional rotation,
+// pre-shrinking to keep the rotated AABB within the original box.
+
+function makeShape(box, shrinkPx) {
+    var rw = box.w - shrinkPx * 2;
+    var rh = box.h - shrinkPx * 2;
+    if (rw < 4 || rh < 4) return null;
+
+    if (box.angle !== 0) {
+        var fit = rotatedFit(rw, rh, box.angle);
+        rw *= fit;
+        rh *= fit;
+    }
+
+    var cx = box.x + box.w / 2;
+    var cy = box.y + box.h / 2;
+    var inner = { x: cx - rw / 2, y: cy - rh / 2, w: rw, h: rh };
+
+    var shape;
+    switch (box.type) {
+        case 'ellipse':    shape = makeEllipseShape(inner); break;
+        case 'pill':       shape = makePillShape(inner); break;
+        case 'circle':     shape = makeCircleShape(inner); break;
+        case 'lens':       shape = makeLensShape(inner); break;
+        case 'blob':       shape = makeBlobShape(inner, box.seed); break;
+        case 'rect':       shape = makeRectShape(inner); break;
+        case 'halfCircle': shape = makeHalfCircleShape(inner, box.orient); break;
+        case 'quarter':    shape = makeQuarterShape(inner, box.orient); break;
+        case 'arch':       shape = makeArchShape(inner, box.orient); break;
+        default:           shape = makeEllipseShape(inner);
+    }
+
+    if (box.angle !== 0 && shape) {
+        shape.rotate(box.angle, new Point(cx, cy));
+    }
+    return shape;
+}
+
+function rotatedFit(w, h, angleDeg) {
+    var a = angleDeg * Math.PI / 180;
+    var ca = Math.abs(Math.cos(a));
+    var sa = Math.abs(Math.sin(a));
+    var newW = w * ca + h * sa;
+    var newH = w * sa + h * ca;
+    return Math.min(w / newW, h / newH);
+}
+
+function makeEllipseShape(b) {
+    return new Path.Ellipse({ point: [b.x, b.y], size: [b.w, b.h] });
+}
+
+function makePillShape(b) {
+    var r = Math.min(b.w, b.h) / 2;
+    return new Path.Rectangle({
+        point: [b.x, b.y],
+        size: [b.w, b.h],
+        radius: r
+    });
+}
+
+function makeCircleShape(b) {
+    var r = Math.min(b.w, b.h) / 2;
+    return new Path.Circle(new Point(b.x + b.w / 2, b.y + b.h / 2), r);
+}
+
+function makeLensShape(b) {
+    var cx = b.x + b.w / 2;
+    var cy = b.y + b.h / 2;
+    var lens = new Path();
+    if (b.w >= b.h) {
+        lens.moveTo(new Point(cx - b.w / 2, cy));
+        lens.arcTo(new Point(cx, cy - b.h / 2), new Point(cx + b.w / 2, cy));
+        lens.arcTo(new Point(cx, cy + b.h / 2), new Point(cx - b.w / 2, cy));
+    } else {
+        lens.moveTo(new Point(cx, cy - b.h / 2));
+        lens.arcTo(new Point(cx + b.w / 2, cy), new Point(cx, cy + b.h / 2));
+        lens.arcTo(new Point(cx - b.w / 2, cy), new Point(cx, cy - b.h / 2));
+    }
+    lens.closed = true;
+    return lens;
+}
+
+function makeRectShape(b) {
+    return new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+}
+
+// Dome / bowl — half of an ellipse inscribed in a 2× box, clipped back to `b`.
+//   orient 0: dome-down (flat at bottom, round on top)
+//   orient 1: dome-up   (flat at top,    round on bottom)
+//   orient 2: dome-right(flat at left,   round on right)
+//   orient 3: dome-left (flat at right,  round on left)
+function makeHalfCircleShape(b, orient) {
+    var ellipse, mask;
+    if (orient === 1) {
+        // flat top → ellipse extends upward out of box
+        ellipse = new Path.Ellipse({ point: [b.x, b.y - b.h], size: [b.w, b.h * 2] });
+    } else if (orient === 2) {
+        // flat left → ellipse extends leftward out of box
+        ellipse = new Path.Ellipse({ point: [b.x - b.w, b.y], size: [b.w * 2, b.h] });
+    } else if (orient === 3) {
+        // flat right → ellipse extends rightward out of box
+        ellipse = new Path.Ellipse({ point: [b.x, b.y], size: [b.w * 2, b.h] });
+    } else {
+        // default: flat bottom → ellipse extends downward out of box
+        ellipse = new Path.Ellipse({ point: [b.x, b.y], size: [b.w, b.h * 2] });
+    }
+    mask = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+    var shape = clipIntersect(ellipse, mask);
+    ellipse.remove();
+    mask.remove();
+    return shape;
+}
+
+// 90° pie wedge with the pivot at one corner of `b`.
+//   orient 0: pivot at TL (wedge fills TL quadrant)
+//   orient 1: pivot at TR
+//   orient 2: pivot at BR
+//   orient 3: pivot at BL
+function makeQuarterShape(b, orient) {
+    var r = Math.min(b.w, b.h);
+    var cx, cy, rx, ry;
+    if (orient === 0)       { cx = b.x;       cy = b.y;       rx = b.x;         ry = b.y; }
+    else if (orient === 1)  { cx = b.x + b.w; cy = b.y;       rx = b.x + b.w - r; ry = b.y; }
+    else if (orient === 2)  { cx = b.x + b.w; cy = b.y + b.h; rx = b.x + b.w - r; ry = b.y + b.h - r; }
+    else                    { cx = b.x;       cy = b.y + b.h; rx = b.x;         ry = b.y + b.h - r; }
+
+    var circle = new Path.Circle(new Point(cx, cy), r);
+    var mask = new Path.Rectangle({ point: [rx, ry], size: [r, r] });
+    var quarter = clipIntersect(circle, mask);
+    circle.remove();
+    mask.remove();
+    return quarter;
+}
+
+// Tombstone / arch: rectangular body with a semicircular cap on one end.
+// Dome radius = w/2 so the cap is a true semicircle. If h < w/2 the body
+// collapses and the shape falls back to a bare dome.
+//   orient 0: upright  (cap at top,    legs at bottom)
+//   orient 1: inverted (cap at bottom, legs at top)
+function makeArchShape(b, orient) {
+    var domeH = Math.min(b.w / 2, b.h);
+    var bodyH = b.h - domeH;
+    var body = null, dome;
+    if (orient === 1) {
+        // inverted: body on top, cap on bottom
+        if (bodyH > 0) {
+            body = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, bodyH] });
+        }
+        var fe = new Path.Ellipse({ point: [b.x, b.y + bodyH - domeH], size: [b.w, domeH * 2] });
+        var fm = new Path.Rectangle({ point: [b.x, b.y + bodyH], size: [b.w, domeH] });
+        dome = clipIntersect(fe, fm);
+        fe.remove(); fm.remove();
+    } else {
+        // upright: cap on top, body on bottom
+        if (bodyH > 0) {
+            body = new Path.Rectangle({ point: [b.x, b.y + domeH], size: [b.w, bodyH] });
+        }
+        var fe = new Path.Ellipse({ point: [b.x, b.y], size: [b.w, domeH * 2] });
+        var fm = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, domeH] });
+        dome = clipIntersect(fe, fm);
+        fe.remove(); fm.remove();
+    }
+    if (body) {
+        var arch = clipUnite(body, dome);
+        body.remove();
+        dome.remove();
+        return arch;
+    }
+    return dome;
+}
+
+function makeBlobShape(b, seedOffset) {
+    var cx = b.x + b.w / 2;
+    var cy = b.y + b.h / 2;
+    var perturbAmp = 0.15;
+    // Shrink base radii so worst-case wobble still fits in box
+    var rx = (b.w / 2) / (1 + perturbAmp);
+    var ry = (b.h / 2) / (1 + perturbAmp);
+    var steps = 64;
+    var blob = new Path();
+    var so = seedOffset * 0.01;
+    for (var i = 0; i < steps; i++) {
+        var theta = (i / steps) * Math.PI * 2;
+        var n = noise.get(
+            Math.cos(theta) * 0.6 + so,
+            Math.sin(theta) * 0.6 + so,
+            so * 0.5
+        );
+        var wobble = 1 + (n - 0.5) * 2 * perturbAmp;
+        blob.add(new Point(
+            cx + Math.cos(theta) * rx * wobble,
+            cy + Math.sin(theta) * ry * wobble
+        ));
+    }
+    blob.closed = true;
+    blob.smooth();
+    return blob;
+}
+
+
+//^^^^^^^^^^^^^ END PROJECT FUNCTIONS ^^^^^^^^^^^^^
 
 
 
