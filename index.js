@@ -97,7 +97,7 @@ var qcolor2 = "None";
 if(new URLSearchParams(window.location.search).get('c2')){qcolor2 = new URLSearchParams(window.location.search).get('c2')}; //colors2
 var qcolor3 = "None";
 if(new URLSearchParams(window.location.search).get('c3')){qcolor3 = new URLSearchParams(window.location.search).get('c3')}; //colors3
-var qcolors = R.random_int(1,6);
+var qcolors = R.random_int(1,12);
 if(new URLSearchParams(window.location.search).get('c')){qcolors = new URLSearchParams(window.location.search).get('c')}; //number of colors
 var qsize = "2";
 if(new URLSearchParams(window.location.search).get('s')){qsize = new URLSearchParams(window.location.search).get('s')}; //size
@@ -107,8 +107,9 @@ qcomplexity = qcomplexity+3;
 
 var qorientation =R.random_int(1,2) < 2 ? "portrait" : "landscape";
 var qframecolor = R.random_int(0,3) < 1 ? "White" : R.random_int(1,3) < 2 ? "Mocha" : "Random";     
+qframecolor = "white";
 var qmatwidth = R.random_int(50,100);
-var qlayout = ["Totem", "Banded", "Stacked", "Cluster"][R.random_int(0,3)];
+var qlayout = ["Totem", "Banded", "Stacked", "Cluster", "Arch", "Grid"][R.random_int(0,5)];
 var qvariation = R.random_int(1,2) < 2 ? "On" : "Off";
 var qrotation = R.random_int(1,2) < 2 ? "Allowed" : "Aligned";
 
@@ -154,7 +155,7 @@ definitions = [
         default: qcolors,
         options: {
             min: 1,
-            max: 6,
+            max: 12,
             step: 1,
         },  
     },
@@ -183,7 +184,7 @@ definitions = [
         id: "framecolor",
         name: "Frame color",
         type: "select",
-        default: qframecolor,
+        default: "White",
         options: {options: ["Random","White","Mocha"]},
     },
     {
@@ -202,7 +203,7 @@ definitions = [
         name: "Layout",
         type: "select",
         default: qlayout,
-        options: {options: ["Totem", "Banded", "Stacked", "Cluster"]},
+        options: {options: ["Totem", "Banded", "Stacked", "Cluster", "Arch", "Grid"]},
     },
     {
         id: "variation",
@@ -330,7 +331,15 @@ if (layoutMode === 'Totem')         composition = buildTotem(density);
 else if (layoutMode === 'Banded')   composition = buildBanded(density);
 else if (layoutMode === 'Stacked')  composition = buildStacked(density);
 else if (layoutMode === 'Cluster')  composition = buildCluster(density);
+else if (layoutMode === 'Arch')     composition = buildArch(density);
+else if (layoutMode === 'Grid')     composition = buildGrid(density);
 
+// Per-hash shrink curve: controls how quickly each shape closes as it goes
+// deeper. Every shape fully closes by its deepest cut layer — this only
+// controls the *rate*. Low values = fast initial shrink (wide surface rings
+// that tighten quickly); high values = slow then fast (thin surface rings,
+// dramatic pinch at the end).
+var shrinkCurve = 0.3 + R.random_dec() * 2.2; // range [0.3, 2.5]
 
 
 var features = {};
@@ -340,6 +349,13 @@ paper.view.autoUpdate = false;
 
 (async () => {
 
+// Clipper "cold-start" warm-up: the very first boolean op silently returns an
+// empty result if it runs before paper.js has yielded/rendered once. Force a
+// render + microtask yield here so the first real op (drawFrame on z=0) isn't
+// the cold one, which otherwise drops the bottom layer (renders one short).
+paper.view.update();
+await new Promise(resolve => setTimeout(resolve, 0));
+
 //---- Draw the Layers
 
 
@@ -347,27 +363,28 @@ for (z = 0; z < stacks; z++) {
     pz = z * prange;
 
     drawFrame(z); // every layer gets the frame ring
+    solid(z);     // solid interior on every layer (including the top)
 
-    // Top layer (z = stacks-1) is a clean "mat" frame: no solid interior, no
-    // composition cuts. The signature is still cut into its bottom frame.
-    // All composition cuts happen on layers 0 .. stacks-2.
-    if (z < stacks - 1) {
-        solid(z);
+    for (i = 0; i < composition.length; i++) {
+        var box = composition[i];
+        // Depth gate: shape is cut on layer z iff the distance from the
+        // topmost layer is less than the shape's depth.
+        //   depth = 1        → cuts only stacks-1 (surface)
+        //   depth = stacks   → cuts every layer (through-cut)
+        if ((stacks - 1 - z) >= box.depth) continue;
 
-        for (i = 0; i < composition.length; i++) {
-            var box = composition[i];
-            // Depth gate: shape is cut on layer z iff the distance from the
-            // topmost cut layer (stacks-2) is less than the shape's depth.
-            //   depth = 1 → cuts only stacks-2 (shallowest)
-            //   depth = stacks-1 → cuts stacks-2 down to 0 (through-cut)
-            if ((stacks - 2 - z) >= box.depth) continue;
+        var minDim = Math.min(box.w, box.h);
+        // How far into this shape's depth range is this layer? 0 at the
+        // surface, approaching 1 at the deepest cut. The shape always fully
+        // closes (zshrink = minDim/2) at its deepest layer. shrinkCurve
+        // controls the rate: <1 = fast initial shrink, 1 = linear, >1 = slow
+        // then fast pinch at the end.
+        var layerInDepth = (stacks - 1 - z);
+        var shrinkFraction = layerInDepth / box.depth;    // 0 at surface, ~1 at deepest
+        var zshrink = ~~(Math.pow(shrinkFraction, shrinkCurve) * (minDim / 2));
 
-            var minDim = Math.min(box.w, box.h);
-            var zshrink = ~~((stacks - z - 1) * (minDim / (stacks * 4)));
-
-            var shape = makeShape(box, zshrink);
-            if (shape) cut(z, shape);
-        }
+        var shape = makeShape(box, zshrink);
+        if (shape) cut(z, shape);
     }
 
     frameIt(z);// finish the layer with a final frame cleanup 
@@ -560,8 +577,11 @@ function proportionalHeights(n, total, gap) {
 }
 
 // Pick a depth for a standalone (non-nested) shape. Variation "Off" forces
-// every shape to cut through every layer; "On" picks a tiered depth so some
-// shapes sit shallow and others cut deep.
+// every shape to cut as deep as possible; "On" picks a tiered depth so some
+// shapes sit shallow and others cut deep. Max depth is stacks-1 so the
+// bottom layer (z=0) always stays solid — it's the back plate of the piece.
+//   depth = 1         → surface cut on the top layer only
+//   depth = stacks-1  → cuts every layer except the bottom
 function pickDepth() {
     var maxDepth = Math.max(1, stacks - 1);
     if ($fx.getParam('variation') === 'Off') return maxDepth;
@@ -577,37 +597,78 @@ function pickDepth() {
 // increasing depth so the reveal steps through successive layer colors.
 function makeNest(box, levels) {
     var out = [];
+    // Cap at stacks-1 so the bottom layer stays solid — no through-cuts.
     var maxDepth = Math.max(1, stacks - 1);
 
     if (levels === 0) {
         out.push({
             x: box.x, y: box.y, w: box.w, h: box.h,
             type: box.type, angle: box.angle, orient: box.orient, seed: box.seed,
+            blobArchetype: box.blobArchetype,
+            blobPhase: box.blobPhase,
+            blobLobes: box.blobLobes,
+            blobSeed: box.blobSeed,
+            starPoints: box.starPoints,
             depth: pickDepth()
         });
         return out;
     }
 
-    // Nested: outer shallow, each level steps deeper
+    // Default nest: outer shallow, each level steps deeper, center-anchored.
     var baseDepth = R.random_int(1, 3);
     var depthStep = R.random_int(1, 3);
     var shrinkStep = 0.22 + R.random_dec() * 0.12;
+    var minShrink  = 0.28;     // stop nesting when scale drops below this
+    var isArch = (box.type === 'arch');
+
+    // Arch-specific overrides — produce the classic MCM rainbow stripe look:
+    //   - tighter shrink (10-15% per ring) → many thin parallel stripes
+    //   - depth step of exactly 1          → each ring reveals the next layer color
+    //   - shared baseline (bottom-anchor for upright, top-anchor for inverted)
+    //     so the nested rings look like concentric arches springing from a
+    //     common base, not arches floating in the middle of the box.
+    if (isArch) {
+        baseDepth  = 1;
+        depthStep  = 1;
+        shrinkStep = 0.10 + R.random_dec() * 0.05;
+        minShrink  = 0.15;
+    }
+
     var variationOff = $fx.getParam('variation') === 'Off';
 
     for (var i = 0; i <= levels; i++) {
         var s = 1 - i * shrinkStep;
-        if (s <= 0.28) break;
+        if (s <= minShrink) break;
         var w = box.w * s;
         var h = box.h * s;
-        var cx = box.x + box.w / 2;
-        var cy = box.y + box.h / 2;
+
+        // Anchor strategy
+        var nx, ny;
+        if (isArch) {
+            // Horizontally centered in the parent
+            nx = box.x + (box.w - w) / 2;
+            // Vertically: orient 0 (upright) bottom-anchored, orient 1 top-anchored
+            ny = (box.orient === 1) ? box.y : (box.y + box.h - h);
+        } else {
+            // Default: center-anchored
+            nx = (box.x + box.w / 2) - w / 2;
+            ny = (box.y + box.h / 2) - h / 2;
+        }
+
         var depth = variationOff ? maxDepth : Math.min(maxDepth, baseDepth + i * depthStep);
         out.push({
-            x: cx - w / 2, y: cy - h / 2, w: w, h: h,
+            x: nx, y: ny, w: w, h: h,
             type: box.type,      // same type as parent for concentric read
             angle: box.angle,    // same angle so rings stay aligned
             orient: box.orient,  // same orientation for concentric dome/arch/quarter
             seed: box.seed + i * 7.3,
+            // Blob / starburst variant params pass through unchanged so
+            // nested concentric shapes trace the SAME profile just scaled.
+            blobArchetype: box.blobArchetype,
+            blobPhase: box.blobPhase,
+            blobLobes: box.blobLobes,
+            blobSeed: box.blobSeed,
+            starPoints: box.starPoints,
             depth: depth
         });
     }
@@ -625,12 +686,22 @@ function mirrorEntry(entry, axisX) {
         angle: -entry.angle,
         orient: mirrorOrient(entry.type, entry.orient),
         seed: entry.seed + 101,
+        // Flip blob phase so kidney dents / peanut waists mirror correctly.
+        // Fractal blobs (archetype 0) will still differ slightly between pairs
+        // since we don't mirror the noise field itself — that's acceptable.
+        blobArchetype: entry.blobArchetype,
+        blobPhase: entry.blobPhase !== undefined ? -entry.blobPhase : undefined,
+        blobLobes: entry.blobLobes,
+        blobSeed: entry.blobSeed,
+        starPoints: entry.starPoints,
         depth: entry.depth
     };
 }
 
-function pickNestLevels(probability) {
+function pickNestLevels(probability, type) {
     if (R.random_dec() >= probability) return 0;
+    // Arches get deep nesting so the rainbow stripe look reads.
+    if (type === 'arch') return R.random_int(4, 7);
     return R.random_int(1, 3);
 }
 
@@ -657,7 +728,7 @@ function buildTotem(count) {
         var w = columnWide * wRatios[R.random_int(0, wRatios.length - 1)];
         var x = columnCenterX - w / 2; // centered on vertical axis
         var primary = makePrimary(x, y, w, h);
-        var nested = makeNest(primary, pickNestLevels(0.65));
+        var nested = makeNest(primary, pickNestLevels(0.65, primary.type));
         for (var j = 0; j < nested.length; j++) out.push(nested[j]);
         y += h + safeGap;
     }
@@ -691,7 +762,7 @@ function buildBanded(count) {
         x = Math.max(leftEdge, Math.min(rightEdge - w, x));
 
         var primary = makePrimary(x, y, w, h);
-        var nested = makeNest(primary, pickNestLevels(0.70));
+        var nested = makeNest(primary, pickNestLevels(0.70, primary.type));
         for (var j = 0; j < nested.length; j++) out.push(nested[j]);
         y += h + safeGap;
     }
@@ -722,7 +793,7 @@ function buildStacked(count) {
         var x = colLeftCenter - w / 2;
 
         var primary = makePrimary(x, y, w, h);
-        var nested = makeNest(primary, pickNestLevels(0.55));
+        var nested = makeNest(primary, pickNestLevels(0.55, primary.type));
         for (var j = 0; j < nested.length; j++) {
             out.push(nested[j]);
             out.push(mirrorEntry(nested[j], axisX));
@@ -772,7 +843,7 @@ function buildCluster(count) {
         var h = gh * cellH - safeGap;
         if (w < safeGap * 2 || h < safeGap * 2) return false;
         var primary = makePrimary(x, y, w, h);
-        var nested = makeNest(primary, pickNestLevels(nestProb));
+        var nested = makeNest(primary, pickNestLevels(nestProb, primary.type));
         for (var j = 0; j < nested.length; j++) out.push(nested[j]);
         occupy(gx, gy, gw, gh);
         return true;
@@ -805,10 +876,125 @@ function buildCluster(count) {
     return out;
 }
 
+// Hero rainbow arch — single dominant arch filling most of the canvas with
+// its feet on the bottom edge and many tightly-spaced concentric rings.
+// This is the canonical MCM "rainbow arch" composition.
+function buildArch(count) {
+    var topEdge = framewidth + safeGap;
+    var bottomEdge = high - framewidth - safeGap;
+    var leftEdge = framewidth + safeGap;
+    var rightEdge = wide - framewidth - safeGap;
+    var availHigh = bottomEdge - topEdge;
+    var availWide = rightEdge - leftEdge;
+
+    // Width 75-92% of available, height 85-100%, anchored to the bottom edge
+    var w = availWide * (0.75 + R.random_dec() * 0.17);
+    var h = availHigh * (0.85 + R.random_dec() * 0.15);
+    var x = leftEdge + (availWide - w) / 2;
+    var y = topEdge + availHigh - h; // bottom-anchored
+
+    // Force arch type — bypass pickShapeType so the layout always delivers.
+    var primary = {
+        x: x, y: y, w: w, h: h,
+        type: 'arch',
+        angle: 0,    // axis-aligned for rainbow purity
+        orient: 0,   // upright (cap on top, legs at bottom)
+        seed: R.random_dec() * 1000
+    };
+
+    // Nest level scales loosely with density param
+    var levels = Math.max(4, Math.min(8, Math.floor(2 + count / 2)));
+    return makeNest(primary, levels);
+}
+
+// Bauhaus tile grid — uniform square cells, each with a quarter-circle (or
+// occasionally halfCircle / circle) at a random corner. Classic MCM tile look.
+// Perlin noise drives orientation and type so nearby cells are spatially
+// coherent — adjacent quarter-circles flow into S-curves, full circles, and
+// petal shapes instead of looking like random scatter.
+function buildGrid(count) {
+    var margin = minOffset * 2;
+    var topEdge = framewidth + margin;
+    var bottomEdge = high - framewidth - margin;
+    var leftEdge = framewidth + margin;
+    var rightEdge = wide - framewidth - margin;
+    var availHigh = bottomEdge - topEdge;
+    var availWide = rightEdge - leftEdge;
+
+    // Column count from density, rows from aspect ratio → square cells
+    var cols = Math.max(3, Math.min(count, 8));
+    var cellSize = availWide / cols;
+    var rows = Math.max(2, Math.floor(availHigh / cellSize));
+    cellSize = Math.min(availWide / cols, availHigh / rows);
+
+    // Center the grid in the drawable area
+    var gridW = cols * cellSize;
+    var gridH = rows * cellSize;
+    var startX = leftEdge + (availWide - gridW) / 2;
+    var startY = topEdge + (availHigh - gridH) / 2;
+
+    // Tight grout line — just enough for material integrity between cells
+    var gridGap = minOffset * 1.5;
+
+    // Perlin noise for spatially-coherent orientation and type selection.
+    // Nearby cells get similar noise values → similar orientations → the
+    // quarter-circles flow into each other forming S-curves, full circles,
+    // and petal shapes. noiseScale controls coherence: low = large smooth
+    // regions, high = more local variation.
+    var noiseScale = 0.3 + R.random_dec() * 0.5;
+    var noiseOffX = R.random_dec() * 100;
+    var noiseOffY = R.random_dec() * 100;
+
+    var out = [];
+    for (var row = 0; row < rows; row++) {
+        for (var col = 0; col < cols; col++) {
+            var x = startX + col * cellSize + gridGap / 2;
+            var y = startY + row * cellSize + gridGap / 2;
+            var w = cellSize - gridGap;
+            var h = cellSize - gridGap;
+            if (w < minOffset * 2 || h < minOffset * 2) continue;
+
+            // Orientation from noise — creates flowing coherent patterns
+            var nOrient = noise.get(
+                col * noiseScale + noiseOffX,
+                row * noiseScale + noiseOffY, 0
+            );
+            // Shape type from a separate noise region
+            var nType = noise.get(
+                col * noiseScale + noiseOffX + 50,
+                row * noiseScale + noiseOffY + 50, 0
+            );
+
+            var type, orient;
+            if (nType > 0.85) {
+                type = 'circle';
+                orient = 0;
+            } else if (nType > 0.72) {
+                type = 'halfCircle';
+                orient = Math.floor(nOrient * 4) % 4;
+            } else {
+                type = 'quarter';
+                orient = Math.floor(nOrient * 4) % 4;
+            }
+
+            out.push({
+                x: x, y: y, w: w, h: h,
+                type: type,
+                angle: 0,
+                orient: orient,
+                seed: R.random_dec() * 1000,
+                depth: pickDepth()
+            });
+        }
+    }
+    return out;
+}
+
 function pickShapeType(w, h) {
     var ratio = Math.min(w, h) / Math.max(w, h);
     var squarish = ratio > 0.8;
     var tall     = h > w * 1.1;
+    var wide     = w > h * 1.1;
 
     // Weighted pool — biomorphic and geometric MCM primitives mixed.
     var pool = [];
@@ -818,23 +1004,34 @@ function pickShapeType(w, h) {
     pool.push('rect', 'rect');                           // clean right angles
     pool.push('blob');
     pool.push('lens');
+    pool.push('boomerang', 'boomerang');                 // curved MCM band
+    pool.push('triangle', 'triangle');                   // pennant / wedge
     if (squarish) {
         pool.push('circle', 'circle');
         pool.push('quarter', 'quarter');                 // Bauhaus pie wedge
+        pool.push('diamond');                            // rhombus accent
+        pool.push('starburst');                          // 4/6/8-point sparkle
+        pool.push('plus');                               // cross accent
     }
     if (tall) {
         pool.push('arch', 'arch', 'arch');               // tombstone — signature MCM form
+    }
+    if (wide) {
+        pool.push('parallelogram');                      // slanted-rect accent
     }
     return pool[R.random_int(0, pool.length - 1)];
 }
 
 // Orientation per shape type:
-//   halfCircle / quarter → 0-3  (4 rotations)
-//   arch                 → 0-1  (upright or inverted)
-//   others               → 0    (ignored)
+//   halfCircle / quarter / triangle / boomerang → 0-3  (4 rotations)
+//   arch / parallelogram                        → 0-1
+//   others (diamond, plus, starburst, etc.)     → 0    (rotationally symmetric)
 function pickOrient(type) {
-    if (type === 'halfCircle' || type === 'quarter') return R.random_int(0, 3);
-    if (type === 'arch') return R.random_int(0, 1);
+    if (type === 'halfCircle' || type === 'quarter' ||
+        type === 'triangle'   || type === 'boomerang') {
+        return R.random_int(0, 3);
+    }
+    if (type === 'arch' || type === 'parallelogram') return R.random_int(0, 1);
     return 0;
 }
 
@@ -842,8 +1039,8 @@ function pickOrient(type) {
 function mirrorOrient(type, orient) {
     if (type === 'halfCircle') {
         if (orient === 2) return 3;  // dome-right → dome-left
-        if (orient === 3) return 2;  // dome-left  → dome-right
-        return orient;               // dome-down / dome-up are symmetric
+        if (orient === 3) return 2;
+        return orient;               // dome-down / dome-up symmetric
     }
     if (type === 'quarter') {
         // TL↔TR, BL↔BR
@@ -852,20 +1049,50 @@ function mirrorOrient(type, orient) {
         if (orient === 2) return 3;
         if (orient === 3) return 2;
     }
-    // arch is symmetric about the vertical axis
+    if (type === 'triangle') {
+        // up/down symmetric, left↔right
+        if (orient === 2) return 3;
+        if (orient === 3) return 2;
+        return orient;
+    }
+    if (type === 'boomerang') {
+        // curves-up/down symmetric, curves-left↔curves-right
+        if (orient === 2) return 3;
+        if (orient === 3) return 2;
+        return orient;
+    }
+    if (type === 'parallelogram') {
+        // slant-right ↔ slant-left
+        return orient === 0 ? 1 : 0;
+    }
+    // arch, diamond, plus, starburst — symmetric about vertical axis
     return orient;
 }
 
 // Build a primary entry at (x, y, w, h) with a randomized type, angle, and orientation.
 function makePrimary(x, y, w, h) {
     var type = pickShapeType(w, h);
-    return {
+    var entry = {
         x: x, y: y, w: w, h: h,
         type: type,
         angle: pickAngle(),
         orient: pickOrient(type),
         seed: R.random_dec() * 1000
     };
+    if (type === 'blob') {
+        // Lock blob variant at build time so concentric nested blobs render
+        // as true rings (same archetype, phase, and noise seed — just scaled).
+        entry.blobArchetype = R.random_int(0, 3); // 0=fractal 1=kidney 2=peanut 3=flower
+        entry.blobPhase = R.random_dec() * Math.PI * 2;
+        entry.blobLobes = R.random_int(3, 5);
+        entry.blobSeed = R.random_dec() * 1000;
+    }
+    if (type === 'starburst') {
+        // 4 / 6 / 8 points — locked at build time so nested starbursts stay
+        // concentric (same point count, same phase).
+        entry.starPoints = [4, 6, 8][R.random_int(0, 2)];
+    }
+    return entry;
 }
 
 function pickAngle() {
@@ -899,16 +1126,22 @@ function makeShape(box, shrinkPx) {
 
     var shape;
     switch (box.type) {
-        case 'ellipse':    shape = makeEllipseShape(inner); break;
-        case 'pill':       shape = makePillShape(inner); break;
-        case 'circle':     shape = makeCircleShape(inner); break;
-        case 'lens':       shape = makeLensShape(inner); break;
-        case 'blob':       shape = makeBlobShape(inner, box.seed); break;
-        case 'rect':       shape = makeRectShape(inner); break;
-        case 'halfCircle': shape = makeHalfCircleShape(inner, box.orient); break;
-        case 'quarter':    shape = makeQuarterShape(inner, box.orient); break;
-        case 'arch':       shape = makeArchShape(inner, box.orient); break;
-        default:           shape = makeEllipseShape(inner);
+        case 'ellipse':       shape = makeEllipseShape(inner); break;
+        case 'pill':          shape = makePillShape(inner); break;
+        case 'circle':        shape = makeCircleShape(inner); break;
+        case 'lens':          shape = makeLensShape(inner); break;
+        case 'blob':          shape = makeBlobShape(inner, box.blobSeed, box.blobArchetype, box.blobPhase, box.blobLobes); break;
+        case 'rect':          shape = makeRectShape(inner); break;
+        case 'halfCircle':    shape = makeHalfCircleShape(inner, box.orient); break;
+        case 'quarter':       shape = makeQuarterShape(inner, box.orient); break;
+        case 'arch':          shape = makeArchShape(inner, box.orient); break;
+        case 'boomerang':     shape = makeBoomerangShape(inner, box.orient); break;
+        case 'triangle':      shape = makeTriangleShape(inner, box.orient); break;
+        case 'diamond':       shape = makeDiamondShape(inner); break;
+        case 'parallelogram': shape = makeParallelogramShape(inner, box.orient); break;
+        case 'plus':          shape = makePlusShape(inner); break;
+        case 'starburst':     shape = makeStarburstShape(inner, box.starPoints || 4); break;
+        default:              shape = makeEllipseShape(inner);
     }
 
     if (box.angle !== 0 && shape) {
@@ -1050,28 +1283,230 @@ function makeArchShape(b, orient) {
     return dome;
 }
 
-function makeBlobShape(b, seedOffset) {
+// Boomerang — curved band, built as a dome minus a smaller concentric dome
+// sharing the same baseline. Arms taper outward (not perfectly uniform), which
+// matches classic MCM boomerang silhouettes. Four orientations.
+function makeBoomerangShape(b, orient) {
+    var thickX = b.w * 0.28;
+    var thickY = b.h * 0.32;
+    var outerEll, outerMask, innerEll, innerMask;
+
+    if (orient === 1) {
+        // curves down (opening up) — flat top
+        outerEll = new Path.Ellipse({ point: [b.x, b.y - b.h], size: [b.w, b.h * 2] });
+        outerMask = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+        innerEll = new Path.Ellipse({
+            point: [b.x + thickX, b.y - (b.h - thickY)],
+            size: [b.w - 2 * thickX, (b.h - thickY) * 2]
+        });
+        innerMask = new Path.Rectangle({
+            point: [b.x + thickX, b.y],
+            size: [b.w - 2 * thickX, b.h - thickY]
+        });
+    } else if (orient === 2) {
+        // curves right (opening left) — flat left
+        outerEll = new Path.Ellipse({ point: [b.x - b.w, b.y], size: [b.w * 2, b.h] });
+        outerMask = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+        innerEll = new Path.Ellipse({
+            point: [b.x - (b.w - thickX), b.y + thickY],
+            size: [(b.w - thickX) * 2, b.h - 2 * thickY]
+        });
+        innerMask = new Path.Rectangle({
+            point: [b.x, b.y + thickY],
+            size: [b.w - thickX, b.h - 2 * thickY]
+        });
+    } else if (orient === 3) {
+        // curves left (opening right) — flat right
+        outerEll = new Path.Ellipse({ point: [b.x, b.y], size: [b.w * 2, b.h] });
+        outerMask = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+        innerEll = new Path.Ellipse({
+            point: [b.x + thickX, b.y + thickY],
+            size: [(b.w - thickX) * 2, b.h - 2 * thickY]
+        });
+        innerMask = new Path.Rectangle({
+            point: [b.x + thickX, b.y + thickY],
+            size: [b.w - thickX, b.h - 2 * thickY]
+        });
+    } else {
+        // default orient 0: curves up (opening down) — flat bottom
+        outerEll = new Path.Ellipse({ point: [b.x, b.y], size: [b.w, b.h * 2] });
+        outerMask = new Path.Rectangle({ point: [b.x, b.y], size: [b.w, b.h] });
+        innerEll = new Path.Ellipse({
+            point: [b.x + thickX, b.y + thickY],
+            size: [b.w - 2 * thickX, (b.h - thickY) * 2]
+        });
+        innerMask = new Path.Rectangle({
+            point: [b.x + thickX, b.y + thickY],
+            size: [b.w - 2 * thickX, b.h - thickY]
+        });
+    }
+
+    var outer = clipIntersect(outerEll, outerMask);
+    outerEll.remove(); outerMask.remove();
+    var inner = clipIntersect(innerEll, innerMask);
+    innerEll.remove(); innerMask.remove();
+    var boom = clipSubtract(outer, inner);
+    outer.remove(); inner.remove();
+    return boom;
+}
+
+function makeTriangleShape(b, orient) {
+    var path = new Path();
+    if (orient === 1) {
+        // pointing down
+        path.add(new Point(b.x, b.y));
+        path.add(new Point(b.x + b.w, b.y));
+        path.add(new Point(b.x + b.w / 2, b.y + b.h));
+    } else if (orient === 2) {
+        // pointing right
+        path.add(new Point(b.x, b.y));
+        path.add(new Point(b.x + b.w, b.y + b.h / 2));
+        path.add(new Point(b.x, b.y + b.h));
+    } else if (orient === 3) {
+        // pointing left
+        path.add(new Point(b.x + b.w, b.y));
+        path.add(new Point(b.x + b.w, b.y + b.h));
+        path.add(new Point(b.x, b.y + b.h / 2));
+    } else {
+        // default orient 0: pointing up
+        path.add(new Point(b.x + b.w / 2, b.y));
+        path.add(new Point(b.x, b.y + b.h));
+        path.add(new Point(b.x + b.w, b.y + b.h));
+    }
+    path.closed = true;
+    return path;
+}
+
+function makeDiamondShape(b) {
+    var path = new Path();
+    path.add(new Point(b.x + b.w / 2, b.y));
+    path.add(new Point(b.x + b.w, b.y + b.h / 2));
+    path.add(new Point(b.x + b.w / 2, b.y + b.h));
+    path.add(new Point(b.x, b.y + b.h / 2));
+    path.closed = true;
+    return path;
+}
+
+function makeParallelogramShape(b, orient) {
+    var slant = b.w * 0.22;
+    var path = new Path();
+    if (orient === 1) {
+        // slant left (top edge shifted left)
+        path.add(new Point(b.x, b.y));
+        path.add(new Point(b.x + b.w - slant, b.y));
+        path.add(new Point(b.x + b.w, b.y + b.h));
+        path.add(new Point(b.x + slant, b.y + b.h));
+    } else {
+        // default orient 0: slant right
+        path.add(new Point(b.x + slant, b.y));
+        path.add(new Point(b.x + b.w, b.y));
+        path.add(new Point(b.x + b.w - slant, b.y + b.h));
+        path.add(new Point(b.x, b.y + b.h));
+    }
+    path.closed = true;
+    return path;
+}
+
+function makePlusShape(b) {
+    // 12-vertex cross. Arm thickness = ~33% of the shorter side.
+    var arm = Math.min(b.w, b.h) * 0.33;
+    var hx = arm / 2;
+    var hy = arm / 2;
     var cx = b.x + b.w / 2;
     var cy = b.y + b.h / 2;
-    var perturbAmp = 0.15;
-    // Shrink base radii so worst-case wobble still fits in box
-    var rx = (b.w / 2) / (1 + perturbAmp);
-    var ry = (b.h / 2) / (1 + perturbAmp);
-    var steps = 64;
+    var path = new Path();
+    path.add(new Point(cx - hx, b.y));
+    path.add(new Point(cx + hx, b.y));
+    path.add(new Point(cx + hx, cy - hy));
+    path.add(new Point(b.x + b.w, cy - hy));
+    path.add(new Point(b.x + b.w, cy + hy));
+    path.add(new Point(cx + hx, cy + hy));
+    path.add(new Point(cx + hx, b.y + b.h));
+    path.add(new Point(cx - hx, b.y + b.h));
+    path.add(new Point(cx - hx, cy + hy));
+    path.add(new Point(b.x, cy + hy));
+    path.add(new Point(b.x, cy - hy));
+    path.add(new Point(cx - hx, cy - hy));
+    path.closed = true;
+    return path;
+}
+
+// 4 / 6 / 8 point starburst — alternating outer "tip" and inner "notch"
+// vertices around an ellipse. innerR controls spikiness (smaller = sharper).
+function makeStarburstShape(b, points) {
+    var n = points || 4;
+    var cx = b.x + b.w / 2;
+    var cy = b.y + b.h / 2;
+    var rx = b.w / 2;
+    var ry = b.h / 2;
+    // 4-point reads as a sparkle (very spiky); 6/8 progressively less spiky.
+    var innerR = (n === 4) ? 0.22 : (n === 6) ? 0.34 : 0.42;
+    var total = n * 2;
+    var path = new Path();
+    for (var i = 0; i < total; i++) {
+        // Start from the top so the shape feels upright
+        var angle = (i / total) * Math.PI * 2 - Math.PI / 2;
+        var r = (i % 2 === 0) ? 1 : innerR;
+        path.add(new Point(cx + Math.cos(angle) * rx * r, cy + Math.sin(angle) * ry * r));
+    }
+    path.closed = true;
+    return path;
+}
+
+// Biomorphic blob. Four archetypes picked at build time and frozen on the box:
+//   0 = FRACTAL — multi-octave perlin, puddle/amoeba with real concavities
+//   1 = KIDNEY  — single Gaussian dent on one side
+//   2 = PEANUT  — 2-lobed dumbbell with a waist
+//   3 = FLOWER  — 3-5 lobed rosette
+// All archetypes return radial function r(θ) ∈ [~0.1, 1.0] so the curve always
+// fits inside the bounding box (after a small safety inset for smooth()).
+function makeBlobShape(b, seedOffset, archetype, phase, lobes) {
+    var cx = b.x + b.w / 2;
+    var cy = b.y + b.h / 2;
+    // Small safety inset so Paper's smooth() can't push control handles past
+    // the box. 4% is enough in practice for catmull-rom-style smoothing.
+    var rx = (b.w / 2) * 0.96;
+    var ry = (b.h / 2) * 0.96;
+    var steps = 96;
     var blob = new Path();
-    var so = seedOffset * 0.01;
+    var so = (seedOffset || 0) * 0.01;
+    var ph = phase || 0;
+    var nLobes = lobes || 3;
+
     for (var i = 0; i < steps; i++) {
         var theta = (i / steps) * Math.PI * 2;
-        var n = noise.get(
-            Math.cos(theta) * 0.6 + so,
-            Math.sin(theta) * 0.6 + so,
-            so * 0.5
-        );
-        var wobble = 1 + (n - 0.5) * 2 * perturbAmp;
-        blob.add(new Point(
-            cx + Math.cos(theta) * rx * wobble,
-            cy + Math.sin(theta) * ry * wobble
-        ));
+        var ct = Math.cos(theta);
+        var st = Math.sin(theta);
+        var r;
+
+        if (archetype === 1) {
+            // Kidney — one concave Gaussian bite. depth=0.45 gives a clear
+            // dent without pinching the curve to zero width.
+            var d = theta - ph;
+            while (d >  Math.PI) d -= 2 * Math.PI;
+            while (d < -Math.PI) d += 2 * Math.PI;
+            var sigma = 0.85;
+            r = 1 - 0.45 * Math.exp(-d * d / (2 * sigma * sigma));
+        } else if (archetype === 2) {
+            // Peanut / dumbbell — 2 lobes with a waist. base+amp must equal 1
+            // so the peak radius matches the box edge.
+            r = 0.72 + 0.28 * Math.cos(2 * (theta - ph));
+        } else if (archetype === 3) {
+            // Flower — n-lobed rosette. n stored on the box (3/4/5).
+            r = 0.76 + 0.24 * Math.cos(nLobes * (theta - ph));
+        } else {
+            // Fractal — multi-octave perlin gives low-freq big bulges with
+            // higher-freq detail riding on top. Range ~[0.30, 1.00].
+            var n1 = noise.get(ct * 0.8 + so,        st * 0.8 + so,        0);
+            var n2 = noise.get(ct * 2.3 + so + 5.1,  st * 2.3 + so + 5.1,  0);
+            var n3 = noise.get(ct * 4.6 + so + 11.7, st * 4.6 + so + 11.7, 0);
+            r = 0.65 + (n1 - 0.5) * 0.40 + (n2 - 0.5) * 0.20 + (n3 - 0.5) * 0.10;
+        }
+
+        if (r < 0.10) r = 0.10;
+        if (r > 1.00) r = 1.00;
+
+        blob.add(new Point(cx + ct * rx * r, cy + st * ry * r));
     }
     blob.closed = true;
     blob.smooth();
